@@ -2,12 +2,25 @@ package datastore
 
 import (
 	"database/sql"
+	"fmt"
 
 	_ "github.com/mattn/go-sqlite3"
 )
 
 type SQLiteDatastore struct {
 	DB *sql.DB
+}
+
+func NewSQLiteDatastore(name string) *SQLiteDatastore {
+	db, err := sql.Open("sqlite3", name)
+	if err != nil {
+		panic(fmt.Errorf("failed to open database: %v", err))
+	}
+	return &SQLiteDatastore{DB: db}
+}
+
+func (ds *SQLiteDatastore) Close() error {
+	return ds.DB.Close()
 }
 
 func (ds *SQLiteDatastore) Get(key string) (string, error) {

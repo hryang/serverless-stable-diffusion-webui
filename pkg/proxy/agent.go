@@ -8,17 +8,17 @@ import (
 	"net/url"
 
 	"github.com/gorilla/websocket"
+	"github.com/hryang/stable-diffusion-webui-proxy/pkg/datastore"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 )
 
 type Agent struct {
-	Target *url.URL               // the target server address
-	Echo   *echo.Echo             // the echo server for reverse proxy
-	Proxy  *httputil.ReverseProxy // the underlying reverse proxy
+	Target    *url.URL               // the target server address
+	Echo      *echo.Echo             // the echo server for reverse proxy
+	Proxy     *httputil.ReverseProxy // the underlying reverse proxy
+	Datastore datastore.Datastore    // the datastore to store the task states
 }
-
-var global int
 
 func NewAgent(endpoint string) *Agent {
 	a := &Agent{
@@ -32,6 +32,8 @@ func NewAgent(endpoint string) *Agent {
 	a.Echo.Use(middleware.Recover())
 
 	a.Proxy = httputil.NewSingleHostReverseProxy(a.Target)
+
+	a.Datastore = datastore.NewSQLiteDatastore(":memory:")
 
 	a.Echo.POST("/internal/progress", a.progressHandler)
 	a.Echo.GET("/queue/join", a.queueJoinHandler)
@@ -56,25 +58,35 @@ func (a *Agent) Start(address string) error {
 	return a.Echo.Start(address)
 }
 
+func (a *Agent) Close() error {
+	return a.Datastore.Close()
+}
+
 func (a *Agent) progressHandler(c echo.Context) error {
-	fmt.Printf("faint progress\n")
 	// Check whether it's a new task.
 
 	// Submit the new task.
 
 	// Query the existed task state.
 
-	global++
-	if global == 1 || global == 2 {
-		//return nil
+	req := c.Request()
+	req.Host = a.Target.Host
+	req.URL.Host = a.Target.Host
+	req.URL.Scheme = a.Target.Scheme
+
+	// Get the response from DB.
+	var body map[string]interface{}
+	if err := c.Bind(&body); err != nil {
+		return err
 	}
+	taskId := body["id_task"].(string)
+	fmt.Printf("faint: %s\n", taskId)
 
 	a.Proxy.ServeHTTP(c.Response(), c.Request())
 	return nil
 }
 
 func (a *Agent) queueJoinHandler(c echo.Context) error {
-	fmt.Printf("faint queue handler\n")
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
 			return true
