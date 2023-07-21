@@ -1,8 +1,12 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -63,27 +67,100 @@ func (a *Agent) Close() error {
 }
 
 func (a *Agent) progressHandler(c echo.Context) error {
-	// Check whether it's a new task.
-
-	// Submit the new task.
-
-	// Query the existed task state.
+	// /internal/progress requests should be handled by proxy instead of agent, so return error.
+	return fmt.Errorf("internal error: agent should not receive the /internal/progress request")
 
 	req := c.Request()
 	req.Host = a.Target.Host
 	req.URL.Host = a.Target.Host
 	req.URL.Scheme = a.Target.Scheme
 
-	// Get the response from DB.
-	var body map[string]interface{}
-	if err := c.Bind(&body); err != nil {
+	// Get task id from request.
+	body, err := io.ReadAll(c.Request().Body)
+	if err != nil {
 		return err
 	}
-	taskId := body["id_task"].(string)
-	fmt.Printf("faint: %s\n", taskId)
+	var m map[string]interface{}
+	if err := json.Unmarshal(body, &m); err != nil {
+		return err
+	}
+	taskId := m["id_task"].(string)
+
+	// The http body is a stream and can be read once only.
+	// So we have to restore the request body for serving.
+	c.Request().Body = io.NopCloser(bytes.NewBuffer(body))
+
+	// Get task state from DB.
+	state, err := a.Datastore.Get(taskId)
+	if err == datastore.ErrNotFound {
+		state = `{"active":false,"queued":false,"completed":false,"progress":null,"eta":null,"live_preview":null,"id_live_preview":-1,"textinfo":"Waiting..."}`
+		a.Datastore.Put(taskId, state)
+	} else if err != nil {
+		return err
+	}
+	//return c.JSON(http.StatusOK, state)
 
 	a.Proxy.ServeHTTP(c.Response(), c.Request())
 	return nil
+}
+
+// updateTaskProgress get the task progress info from downstream GPUServer and update it to the DB.
+func (a *Agent) updateTaskProgress(taskId string) error {
+	client := &http.Client{}
+	previewId := 0
+	for {
+		// TODO: Make the task progress url configurable.
+		reqBody := fmt.Sprintf(`{"id_task":"%s","id_live_preview":%d}`, taskId, previewId)
+		req, err := http.NewRequest(
+			"GET", "http://sd.fc-stable-diffusion.1050834996213541.cn-hangzhou.fc.devsapp.net/internal/progress", bytes.NewBuffer([]byte(reqBody)))
+		if err != nil {
+			return err
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		body, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+
+		// Update the task progress to DB.
+		a.Datastore.Put(taskId, string(body))
+		a.Echo.Logger.Infof("update task progress: %s", string(body))
+
+		var m map[string]interface{}
+		if err := json.Unmarshal(body, &m); err != nil {
+			return err
+		}
+
+		// Get live preview id from the response as the input of the next request.
+		val := m["id_live_preview"]
+		if val == nil {
+			return fmt.Errorf("can not find id_live_preview in /internal/progress response")
+		}
+		var ok bool
+		previewId, ok = val.(int)
+		if !ok {
+			return fmt.Errorf("wrong id_live_preview: %v", previewId)
+		}
+
+		// Return if complete.
+		val = m["completed"]
+		if val == nil {
+			return fmt.Errorf("can not find completed in /internal/progress response")
+		}
+		completed, ok := val.(bool)
+		if !ok {
+			return fmt.Errorf("wrong completed: %v", completed)
+		}
+		if completed {
+			return nil
+		}
+	}
 }
 
 func (a *Agent) queueJoinHandler(c echo.Context) error {
@@ -120,17 +197,44 @@ func (a *Agent) queueJoinHandler(c echo.Context) error {
 			case <-ctx.Done():
 				return // when context is cancel, stop the goroutine
 			default:
+				// Read message.
 				messageType, message, err := clientConn.ReadMessage()
 				if _, ok := err.(*websocket.CloseError); ok {
-					a.Echo.Logger.Infof("Close the websocket connection.")
+					a.Echo.Logger.Infof("close the websocket connection.")
 					return
 				}
 				if err != nil {
 					a.Echo.Logger.Errorf("read from websocket client error: %v", err)
 					return
 				}
-				fmt.Printf("ws-req: %s\n", string(message))
-				//a.Echo.Logger.Infof("ws-req: %s", string(message))
+				a.Echo.Logger.Debugf("websocket send message: %s", string(message))
+
+				// Parse task id from message.
+				var m map[string]interface{}
+				if err := json.Unmarshal(message, &m); err != nil {
+					a.Echo.Logger.Errorf("unmarshal json error: %v", err)
+					return
+				}
+				var taskId string
+				if data, ok := m["data"]; ok {
+					if l, ok := data.([]string); ok {
+						taskId = l[0]
+					} else {
+						a.Echo.Logger.Errorf("invalid websocket message: %v", string(message))
+					}
+				}
+
+				// Launch update-task goroutine if necessary.
+				if taskId != "" {
+					go func() {
+						a.Echo.Logger.Infof("launch update-task goroutine for task %s", taskId)
+						err := a.updateTaskProgress(taskId)
+						if err != nil {
+							a.Echo.Logger.Errorf("update task progress error: %v", err)
+						}
+					}()
+				}
+
 				err = serverConn.WriteMessage(messageType, message)
 				if err != nil {
 					a.Echo.Logger.Errorf("write to websocket server error: %v", err)
@@ -150,15 +254,14 @@ func (a *Agent) queueJoinHandler(c echo.Context) error {
 			default:
 				messageType, message, err := serverConn.ReadMessage()
 				if _, ok := err.(*websocket.CloseError); ok {
-					a.Echo.Logger.Infof("Close the websocket connection.")
+					a.Echo.Logger.Infof("close the websocket connection")
 					return
 				}
 				if err != nil {
 					a.Echo.Logger.Errorf("read from websocket server error: %v", err)
 					return
 				}
-				fmt.Printf("ws-resp: %s\n", string(message))
-				//a.Echo.Logger.Infof("ws-resp: %s", string(message))
+				a.Echo.Logger.Debugf("websocket receive response: %s", string(message))
 				err = clientConn.WriteMessage(messageType, message)
 				if err != nil {
 					a.Echo.Logger.Errorf("write to websocket client error: %v", err)

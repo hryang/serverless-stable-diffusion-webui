@@ -34,7 +34,7 @@ func TestSQLiteDatastore(t *testing.T) {
 	// Test Get with non-existent key
 	_, err = datastore.Get("non-existent")
 	assert.Error(t, err)
-	assert.Equal(t, sql.ErrNoRows, err)
+	assert.Equal(t, ErrNotFound, err)
 
 	// Test Put with empty key
 	err = datastore.Put("", "myvalue")
@@ -50,5 +50,5 @@ func TestSQLiteDatastore(t *testing.T) {
 
 	_, err = datastore.Get("mykey")
 	assert.Error(t, err)
-	assert.Equal(t, sql.ErrNoRows, err)
+	assert.Equal(t, ErrNotFound, err)
 }

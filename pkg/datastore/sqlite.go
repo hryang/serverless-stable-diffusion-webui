@@ -16,6 +16,10 @@ func NewSQLiteDatastore(name string) *SQLiteDatastore {
 	if err != nil {
 		panic(fmt.Errorf("failed to open database: %v", err))
 	}
+	_, err = db.Exec("CREATE TABLE mytable (key text not null primary key, value text);")
+	if err != nil {
+		panic(fmt.Errorf("failed to create table: %v", err))
+	}
 	return &SQLiteDatastore{DB: db}
 }
 
@@ -27,6 +31,9 @@ func (ds *SQLiteDatastore) Get(key string) (string, error) {
 	var result string
 	err := ds.DB.QueryRow("SELECT value FROM mytable WHERE key = ?", key).Scan(&result)
 	if err != nil {
+		if err == sql.ErrNoRows {
+			err = ErrNotFound
+		}
 		return "", err
 	}
 	return result, nil
