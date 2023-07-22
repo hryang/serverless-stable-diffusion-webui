@@ -1,11 +1,9 @@
 package main
 
-import (
-	"github.com/hryang/stable-diffusion-webui-proxy/pkg/proxy"
-)
+import "github.com/hryang/stable-diffusion-webui-proxy/pkg/agent"
 
 func main() {
-	s := proxy.NewAgent(
+	s := agent.NewAgent(
 		"http://sd.fc-stable-diffusion.1050834996213541.cn-hangzhou.fc.devsapp.net/")
 	defer s.Close()
 
