@@ -10,6 +10,8 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"reflect"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -32,7 +34,7 @@ func NewAgent(endpoint string) *Agent {
 		HttpClient: &http.Client{},
 	}
 
-	//a.Echo.Debug = true
+	a.Echo.Debug = true
 	a.Target, _ = url.Parse(endpoint)
 
 	a.Echo.Use(middleware.Logger())
@@ -54,7 +56,7 @@ func NewAgent(endpoint string) *Agent {
 		return nil
 	})
 
-	a.Echo.Logger.Infof("Create the webui agent for %s", endpoint)
+	a.Echo.Logger.Infof("create the webui agent for %s", endpoint)
 
 	return a
 }
@@ -165,94 +167,93 @@ func (a *Agent) queueJoinHandler(c echo.Context) error {
 	defer serverConn.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	var wg sync.WaitGroup
 
 	// Create goroutine to handle client-to-server request.
+	wg.Add(1)
 	go func() {
-		defer cancel() // cancel context when goroutine exit
+		defer wg.Done()
 		for {
-			select {
-			case <-ctx.Done():
-				return // when context is cancel, stop the goroutine
-			default:
-				// Read message.
-				messageType, message, err := clientConn.ReadMessage()
-				if _, ok := err.(*websocket.CloseError); ok {
-					a.Echo.Logger.Infof("close the websocket connection.")
-					return
-				}
-				if err != nil {
-					a.Echo.Logger.Errorf("read from websocket client error: %v", err)
-					return
-				}
-				a.Echo.Logger.Debugf("websocket send message: %s", string(message))
+			// Read message.
+			messageType, message, err := clientConn.ReadMessage()
+			if _, ok := err.(*websocket.CloseError); ok {
+				a.Echo.Logger.Infof("close the websocket connection.")
+				return
+			}
+			if err != nil {
+				a.Echo.Logger.Errorf("read from websocket client error: %v", err)
+				return
+			}
+			a.Echo.Logger.Debugf("websocket send message: %s", string(message))
 
-				// Parse task id from message.
-				var m map[string]interface{}
-				if err := json.Unmarshal(message, &m); err != nil {
-					a.Echo.Logger.Errorf("unmarshal json error: %v", err)
-					return
-				}
-				var taskId string
-				if data, ok := m["data"]; ok {
-					if l, ok := data.([]interface{}); ok {
-						if len(l) > 0 {
-							taskId, _ = l[0].(string)
-						}
+			// Parse task id from message.
+			var m map[string]interface{}
+			if err := json.Unmarshal(message, &m); err != nil {
+				a.Echo.Logger.Errorf("unmarshal json error: %v", err)
+				return
+			}
+			var taskId string
+			if data, ok := m["data"]; ok {
+				if l, ok := data.([]interface{}); ok {
+					if len(l) > 0 {
+						taskId, _ = l[0].(string)
 					}
 				}
-				a.Echo.Logger.Infof("websocket message: %v %v", string(message), m)
+			}
+			a.Echo.Logger.Infof("websocket message: %v", string(message))
 
-				// Launch update-task goroutine if necessary.
-				if taskId != "" {
-					go func() {
-						a.Echo.Logger.Infof("launch update-task goroutine for task %s", taskId)
-						err := a.updateTaskProgress(ctx, taskId)
-						if err != nil {
-							a.Echo.Logger.Errorf("update task progress error: %v", err)
-						}
-					}()
-				}
+			// Launch update-task goroutine if necessary.
+			// The task launching message contains the task id, which is the first element of the "data" array.
+			// For example, following two messages, the first one is the task launching message, the second one is not.
+			// {"fn_index": 89, "data": ["task(yx99r25qdxzgrue)", "city, cute boy", ...], ...}
+			// {"fn_index": 94, "data": ["city, cute boy, ..."], ...}
+			if strings.HasPrefix(taskId, "task") {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					a.Echo.Logger.Infof("launch update-task goroutine for task %s", taskId)
+					err := a.updateTaskProgress(ctx, taskId)
+					if err != nil {
+						a.Echo.Logger.Errorf("update task progress error: %v", err)
+					}
+				}()
+			}
 
-				err = serverConn.WriteMessage(messageType, message)
-				if err != nil {
-					a.Echo.Logger.Errorf("write to websocket server error: %v", err)
-					return
-				}
+			err = serverConn.WriteMessage(messageType, message)
+			if err != nil {
+				a.Echo.Logger.Errorf("write to websocket server error: %v", err)
+				return
 			}
 		}
 	}()
 
 	// Create goroutine to handle server-to-client responses.
+	wg.Add(1)
 	go func() {
-		defer cancel() // cancel context when goroutine exit
+		defer wg.Done()
 		for {
-			select {
-			case <-ctx.Done():
-				return // when context is cancel, stop the goroutine
-			default:
-				messageType, message, err := serverConn.ReadMessage()
-				if _, ok := err.(*websocket.CloseError); ok {
-					a.Echo.Logger.Infof("close the websocket connection")
-					return
-				}
-				if err != nil {
-					a.Echo.Logger.Errorf("read from websocket server error: %v", err)
-					return
-				}
-				a.Echo.Logger.Debugf("websocket receive response: %s", string(message))
-				err = clientConn.WriteMessage(messageType, message)
-				if err != nil {
-					a.Echo.Logger.Errorf("write to websocket client error: %v", err)
-					return
-				}
+			messageType, message, err := serverConn.ReadMessage()
+			if _, ok := err.(*websocket.CloseError); ok {
+				a.Echo.Logger.Infof("close the websocket connection")
+				return
+			}
+			if err != nil {
+				a.Echo.Logger.Errorf("read from websocket server error: %v", err)
+				return
+			}
+			a.Echo.Logger.Debugf("websocket receive response: %s", string(message))
+			err = clientConn.WriteMessage(messageType, message)
+			if err != nil {
+				a.Echo.Logger.Errorf("write to websocket client error: %v", err)
+				return
 			}
 		}
 	}()
 
-	// Wait for at least one goroutine finishing.
+	// Wait for all goroutines finishing.
 	// The echo framework handles the requests in seperated goroutines. So blocking-wait is OK.
-	<-ctx.Done()
+	wg.Wait()
+	cancel() // notify the update task done
 
 	return nil
 }

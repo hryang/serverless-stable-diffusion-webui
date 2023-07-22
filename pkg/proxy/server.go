@@ -24,7 +24,7 @@ func NewServer(endpoint string) *Server {
 		Echo: echo.New(),
 	}
 
-	s.Echo.Debug = true
+	// s.Echo.Debug = true
 	s.Target, _ = url.Parse(endpoint)
 
 	s.Echo.Use(middleware.Logger())
@@ -46,7 +46,7 @@ func NewServer(endpoint string) *Server {
 		return nil
 	})
 
-	s.Echo.Logger.Infof("Create the reverse proxy for %s", endpoint)
+	s.Echo.Logger.Infof("create the reverse proxy for %s", endpoint)
 
 	return s
 }
