@@ -16,7 +16,8 @@ func NewSQLiteDatastore(name string) *SQLiteDatastore {
 	if err != nil {
 		panic(fmt.Errorf("failed to open database: %v", err))
 	}
-	_, err = db.Exec("CREATE TABLE mytable (key text not null primary key, value text);")
+	// TODO: make table name configurable.
+	_, err = db.Exec("CREATE TABLE IF NOT EXISTS mytable (key text not null primary key, value text);")
 	if err != nil {
 		panic(fmt.Errorf("failed to create table: %v", err))
 	}
