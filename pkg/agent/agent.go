@@ -1,4 +1,4 @@
-package proxy
+package agent
 
 import (
 	"bytes"
@@ -6,10 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"reflect"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/hryang/stable-diffusion-webui-proxy/pkg/datastore"
@@ -18,15 +19,17 @@ import (
 )
 
 type Agent struct {
-	Target    *url.URL               // the target server address
-	Echo      *echo.Echo             // the echo server for reverse proxy
-	Proxy     *httputil.ReverseProxy // the underlying reverse proxy
-	Datastore datastore.Datastore    // the datastore to store the task states
+	Target     *url.URL               // the target server address
+	Echo       *echo.Echo             // the echo server for reverse proxy
+	Proxy      *httputil.ReverseProxy // the underlying reverse proxy
+	Datastore  datastore.Datastore    // the datastore to store the task states
+	HttpClient *http.Client           // the http client
 }
 
 func NewAgent(endpoint string) *Agent {
 	a := &Agent{
-		Echo: echo.New(),
+		Echo:       echo.New(),
+		HttpClient: &http.Client{},
 	}
 
 	//a.Echo.Debug = true
@@ -37,9 +40,8 @@ func NewAgent(endpoint string) *Agent {
 
 	a.Proxy = httputil.NewSingleHostReverseProxy(a.Target)
 
-	a.Datastore = datastore.NewSQLiteDatastore(":memory:")
+	a.Datastore = datastore.NewSQLiteDatastore("./test.db")
 
-	a.Echo.POST("/internal/progress", a.progressHandler)
 	a.Echo.GET("/queue/join", a.queueJoinHandler)
 
 	// Handler for all other cases.
@@ -48,7 +50,6 @@ func NewAgent(endpoint string) *Agent {
 		req.Host = a.Target.Host
 		req.URL.Host = a.Target.Host
 		req.URL.Scheme = a.Target.Scheme
-		a.Echo.Logger.Info(req)
 		a.Proxy.ServeHTTP(c.Response(), c.Request())
 		return nil
 	})
@@ -66,53 +67,22 @@ func (a *Agent) Close() error {
 	return a.Datastore.Close()
 }
 
-func (a *Agent) progressHandler(c echo.Context) error {
-	// /internal/progress requests should be handled by proxy instead of agent, so return error.
-	return fmt.Errorf("internal error: agent should not receive the /internal/progress request")
-
-	req := c.Request()
-	req.Host = a.Target.Host
-	req.URL.Host = a.Target.Host
-	req.URL.Scheme = a.Target.Scheme
-
-	// Get task id from request.
-	body, err := io.ReadAll(c.Request().Body)
-	if err != nil {
-		return err
-	}
-	var m map[string]interface{}
-	if err := json.Unmarshal(body, &m); err != nil {
-		return err
-	}
-	taskId := m["id_task"].(string)
-
-	// The http body is a stream and can be read once only.
-	// So we have to restore the request body for serving.
-	c.Request().Body = io.NopCloser(bytes.NewBuffer(body))
-
-	// Get task state from DB.
-	state, err := a.Datastore.Get(taskId)
-	if err == datastore.ErrNotFound {
-		state = `{"active":false,"queued":false,"completed":false,"progress":null,"eta":null,"live_preview":null,"id_live_preview":-1,"textinfo":"Waiting..."}`
-		a.Datastore.Put(taskId, state)
-	} else if err != nil {
-		return err
-	}
-	//return c.JSON(http.StatusOK, state)
-
-	a.Proxy.ServeHTTP(c.Response(), c.Request())
-	return nil
-}
-
 // updateTaskProgress get the task progress info from downstream GPUServer and update it to the DB.
-func (a *Agent) updateTaskProgress(taskId string) error {
-	client := &http.Client{}
-	previewId := 0
+func (a *Agent) updateTaskProgress(ctx context.Context, taskId string) error {
+	client := a.HttpClient
+	var previewId float64
+	notifyDone := false
 	for {
+		select {
+		case <-ctx.Done():
+			notifyDone = true
+		default:
+			// Do nothing, go to the next
+		}
 		// TODO: Make the task progress url configurable.
-		reqBody := fmt.Sprintf(`{"id_task":"%s","id_live_preview":%d}`, taskId, previewId)
+		reqBody := fmt.Sprintf(`{"id_task":"%s","id_live_preview":%f}`, taskId, previewId)
 		req, err := http.NewRequest(
-			"GET", "http://sd.fc-stable-diffusion.1050834996213541.cn-hangzhou.fc.devsapp.net/internal/progress", bytes.NewBuffer([]byte(reqBody)))
+			"POST", "http://sd.fc-stable-diffusion.1050834996213541.cn-hangzhou.fc.devsapp.net/internal/progress", bytes.NewBuffer([]byte(reqBody)))
 		if err != nil {
 			return err
 		}
@@ -123,14 +93,14 @@ func (a *Agent) updateTaskProgress(taskId string) error {
 		}
 		defer resp.Body.Close()
 
-		body, err := ioutil.ReadAll(resp.Body)
+		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return err
 		}
 
 		// Update the task progress to DB.
 		a.Datastore.Put(taskId, string(body))
-		a.Echo.Logger.Infof("update task progress: %s", string(body))
+		a.Echo.Logger.Debugf("update task progress: %s", string(body))
 
 		var m map[string]interface{}
 		if err := json.Unmarshal(body, &m); err != nil {
@@ -143,9 +113,8 @@ func (a *Agent) updateTaskProgress(taskId string) error {
 			return fmt.Errorf("can not find id_live_preview in /internal/progress response")
 		}
 		var ok bool
-		previewId, ok = val.(int)
-		if !ok {
-			return fmt.Errorf("wrong id_live_preview: %v", previewId)
+		if previewId, ok = val.(float64); !ok {
+			return fmt.Errorf("invalid id_live_preview: %v, expect type: float64, actual type: %s", val, reflect.TypeOf(val))
 		}
 
 		// Return if complete.
@@ -158,8 +127,17 @@ func (a *Agent) updateTaskProgress(taskId string) error {
 			return fmt.Errorf("wrong completed: %v", completed)
 		}
 		if completed {
+			a.Echo.Logger.Infof("the task %s is done", taskId)
 			return nil
 		}
+		// notifyDone means the update-progress is notified by other goroutine to finish,
+		// either because the task has been aborted or succeed.
+		if notifyDone {
+			a.Echo.Logger.Infof("the task %s is done, either success or failed", taskId)
+			return nil
+		}
+
+		time.Sleep(500 * time.Millisecond)
 	}
 }
 
@@ -217,18 +195,19 @@ func (a *Agent) queueJoinHandler(c echo.Context) error {
 				}
 				var taskId string
 				if data, ok := m["data"]; ok {
-					if l, ok := data.([]string); ok {
-						taskId = l[0]
-					} else {
-						a.Echo.Logger.Errorf("invalid websocket message: %v", string(message))
+					if l, ok := data.([]interface{}); ok {
+						if len(l) > 0 {
+							taskId, _ = l[0].(string)
+						}
 					}
 				}
+				a.Echo.Logger.Infof("websocket message: %v %v", string(message), m)
 
 				// Launch update-task goroutine if necessary.
 				if taskId != "" {
 					go func() {
 						a.Echo.Logger.Infof("launch update-task goroutine for task %s", taskId)
-						err := a.updateTaskProgress(taskId)
+						err := a.updateTaskProgress(ctx, taskId)
 						if err != nil {
 							a.Echo.Logger.Errorf("update task progress error: %v", err)
 						}
