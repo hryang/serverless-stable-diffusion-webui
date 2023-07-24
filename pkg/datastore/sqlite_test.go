@@ -1,54 +1,68 @@
 package datastore
 
 import (
-	"database/sql"
 	"testing"
 
-	_ "github.com/mattn/go-sqlite3"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestSQLiteDatastore(t *testing.T) {
-	// Putup
-	db, err := sql.Open("sqlite3", ":memory:")
-	if err != nil {
-		t.Fatalf("Failed to open database: %v", err)
+	config := &Config{
+		TableName: "test",
+		ColumnConfig: map[string]string{
+			"key":      "text primary key not null",
+			"value":    "text",
+			"intCol":   "int",
+			"floatCol": "float",
+		},
+		KeyColumnName: "key",
 	}
-	defer db.Close()
+	ds := NewSQLiteDatastore(":memory:", config)
+	defer ds.Close()
 
-	_, err = db.Exec("CREATE TABLE mytable (key text not null primary key, value text);")
-	if err != nil {
-		t.Fatalf("Failed to create table: %v", err)
-	}
+	key := "testKey"
+	value := "testValue"
+	intValue := 123
+	floatValue := 123.45
 
-	datastore := &SQLiteDatastore{DB: db}
-
-	// Test Put and Get
-	err = datastore.Put("mykey", "myvalue")
+	// Test Put.
+	err := ds.Put(key, map[string]interface{}{"value": value, "intCol": intValue, "floatCol": floatValue})
 	assert.NoError(t, err)
 
-	value, err := datastore.Get("mykey")
+	// Test Get.
+	result, err := ds.Get(key, []string{"value", "intCol", "floatCol"})
 	assert.NoError(t, err)
-	assert.Equal(t, "myvalue", value)
+	assert.Equal(t, value, result["value"].(string))
+	assert.Equal(t, int64(intValue), result["intCol"].(int64))
+	assert.Equal(t, floatValue, result["floatCol"].(float64))
 
-	// Test Get with non-existent key
-	_, err = datastore.Get("non-existent")
+	// Test Delete.
+	err = ds.Delete(key)
+	assert.NoError(t, err)
+
+	// Test that the key is indeed deleted.
+	result, err = ds.Get(key, []string{"value", "intCol", "floatCol"})
+	assert.NoError(t, err)
+	assert.Nil(t, result)
+
+	// Test deleting a non-existent key.
+	err = ds.Delete("non-existent key")
+	assert.NoError(t, err)
+
+	// Test Put with non-existent column.
+	err = ds.Put(key, map[string]interface{}{"non_existent_column": value})
 	assert.Error(t, err)
-	assert.Equal(t, ErrNotFound, err)
 
-	// Test Put with empty key
-	err = datastore.Put("", "myvalue")
+	// Test Put with wrong value type.
+	// Note: we do not expect wrong value type will result in error, since Go database/sql will try to convert it automatically.
+	err = ds.Put(key, map[string]interface{}{"value": 123, "intCol": "123", "floatCol": "123.45"})
 	assert.NoError(t, err)
 
-	value, err = datastore.Get("")
-	assert.NoError(t, err)
-	assert.Equal(t, "myvalue", value)
-
-	// Test Delete
-	err = datastore.Delete("mykey")
-	assert.NoError(t, err)
-
-	_, err = datastore.Get("mykey")
+	// Test Get with non-existent column.
+	_, err = ds.Get(key, []string{"non_existent_column"})
 	assert.Error(t, err)
-	assert.Equal(t, ErrNotFound, err)
+
+	// Test Get with non-existent key.
+	_, err = ds.Get("non-existent key", []string{"value", "intCol", "floatCol"})
+	assert.NoError(t, err)
 }

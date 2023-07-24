@@ -28,21 +28,20 @@ type Agent struct {
 	HttpClient *http.Client           // the http client
 }
 
-func NewAgent(endpoint string) *Agent {
+func NewAgent(targetStr string, ds datastore.Datastore) *Agent {
 	a := &Agent{
 		Echo:       echo.New(),
 		HttpClient: &http.Client{},
+		Datastore:  ds,
 	}
 
 	a.Echo.Debug = true
-	a.Target, _ = url.Parse(endpoint)
+	a.Target, _ = url.Parse(targetStr)
 
 	a.Echo.Use(middleware.Logger())
 	a.Echo.Use(middleware.Recover())
 
 	a.Proxy = httputil.NewSingleHostReverseProxy(a.Target)
-
-	a.Datastore = datastore.NewSQLiteDatastore("./test.db")
 
 	a.Echo.GET("/queue/join", a.queueJoinHandler)
 
@@ -56,7 +55,7 @@ func NewAgent(endpoint string) *Agent {
 		return nil
 	})
 
-	a.Echo.Logger.Infof("create the webui agent for %s", endpoint)
+	a.Echo.Logger.Infof("create the webui agent for %s", targetStr)
 
 	return a
 }

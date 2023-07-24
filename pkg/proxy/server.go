@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httputil"
@@ -19,20 +20,23 @@ type Server struct {
 	Datastore datastore.Datastore // the datastore to store the task states
 }
 
-func NewServer(endpoint string) *Server {
+func NewServer(targetStr string, ds datastore.Datastore) *Server {
 	s := &Server{
-		Echo: echo.New(),
+		Echo:      echo.New(),
+		Datastore: ds,
 	}
 
 	// s.Echo.Debug = true
-	s.Target, _ = url.Parse(endpoint)
+	var err error
+	s.Target, err = url.Parse(targetStr)
+	if err != nil {
+		panic(fmt.Errorf("parse target %s failed: %v", targetStr, err))
+	}
 
 	s.Echo.Use(middleware.Logger())
 	s.Echo.Use(middleware.Recover())
 
 	proxy := httputil.NewSingleHostReverseProxy(s.Target)
-
-	s.Datastore = datastore.NewSQLiteDatastore("./test.db")
 
 	s.Echo.POST("/internal/progress", s.progressHandler)
 
@@ -46,7 +50,7 @@ func NewServer(endpoint string) *Server {
 		return nil
 	})
 
-	s.Echo.Logger.Infof("create the reverse proxy for %s", endpoint)
+	s.Echo.Logger.Infof("create the reverse proxy for %s", targetStr)
 
 	return s
 }
