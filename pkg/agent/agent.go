@@ -21,22 +21,26 @@ import (
 )
 
 type Agent struct {
-	Target     *url.URL               // the target server address
-	Echo       *echo.Echo             // the echo server for reverse proxy
-	Proxy      *httputil.ReverseProxy // the underlying reverse proxy
-	Datastore  datastore.Datastore    // the datastore to store the task states
-	HttpClient *http.Client           // the http client
+	Target                *url.URL                // the target server address
+	Echo                  *echo.Echo              // the echo server for reverse proxy
+	Proxy                 *httputil.ReverseProxy  // the underlying reverse proxy
+	TaskProgressDatastore *datastore.TaskProgress // the datastore to store the task progress states
+	HttpClient            *http.Client            // the http client
 }
 
-func NewAgent(targetStr string, ds datastore.Datastore) *Agent {
+func NewAgent(targetStr string, dbType datastore.DatastoreType, dbName string) *Agent {
 	a := &Agent{
 		Echo:       echo.New(),
 		HttpClient: &http.Client{},
-		Datastore:  ds,
 	}
+	tpds, err := datastore.NewTaskProgress(dbType, dbName)
+	if err != nil {
+		panic(fmt.Errorf("create type %d task progress datastore %s failed: %v", dbType, dbName, err))
+	}
+	a.TaskProgressDatastore = tpds
 
 	a.Echo.Debug = true
-	a.Target, _ = url.Parse(targetStr)
+	a.Target, err = url.Parse(targetStr)
 
 	a.Echo.Use(middleware.Logger())
 	a.Echo.Use(middleware.Recover())
@@ -65,7 +69,7 @@ func (a *Agent) Start(address string) error {
 }
 
 func (a *Agent) Close() error {
-	return a.Datastore.Close()
+	return a.TaskProgressDatastore.Close()
 }
 
 // updateTaskProgress get the task progress info from downstream GPUServer and update it to the DB.
@@ -100,7 +104,7 @@ func (a *Agent) updateTaskProgress(ctx context.Context, taskId string) error {
 		}
 
 		// Update the task progress to DB.
-		a.Datastore.Put(taskId, string(body))
+		a.TaskProgressDatastore.PutProgress(taskId, string(body))
 		a.Echo.Logger.Debugf("update task progress: %s", string(body))
 
 		var m map[string]interface{}

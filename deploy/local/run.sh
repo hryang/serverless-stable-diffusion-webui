@@ -1,7 +1,7 @@
 #! /bin/bash
 
 for d in agent proxy; do
-  (go build -o sd$d ./$d)
+  (go build -o sd$d ../../cmd/$d)
 done
 
 pkill sdagent

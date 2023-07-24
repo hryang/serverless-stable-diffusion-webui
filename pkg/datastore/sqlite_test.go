@@ -7,17 +7,19 @@ import (
 )
 
 func TestSQLiteDatastore(t *testing.T) {
+	primaryKeyColumnName := "primary_key"
 	config := &Config{
+		DBName:    ":memory:", // the memory database for testing purposes
 		TableName: "test",
 		ColumnConfig: map[string]string{
-			"key":      "text primary key not null",
-			"value":    "text",
-			"intCol":   "int",
-			"floatCol": "float",
+			primaryKeyColumnName: "text primary key not null",
+			"value":              "text",
+			"intCol":             "int",
+			"floatCol":           "float",
 		},
-		KeyColumnName: "key",
+		PrimaryKeyColumnName: primaryKeyColumnName,
 	}
-	ds := NewSQLiteDatastore(":memory:", config)
+	ds := NewSQLiteDatastore(config)
 	defer ds.Close()
 
 	key := "testKey"

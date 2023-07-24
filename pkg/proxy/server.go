@@ -15,19 +15,22 @@ import (
 )
 
 type Server struct {
-	Target    *url.URL            // the target server address
-	Echo      *echo.Echo          // the echo server for reverse proxy
-	Datastore datastore.Datastore // the datastore to store the task states
+	Target                *url.URL                // the target server address
+	Echo                  *echo.Echo              // the echo server for reverse proxy
+	TaskProgressDatastore *datastore.TaskProgress // the datastore to store the task states
 }
 
-func NewServer(targetStr string, ds datastore.Datastore) *Server {
+func NewServer(targetStr string, dbType datastore.DatastoreType, dbName string) *Server {
 	s := &Server{
-		Echo:      echo.New(),
-		Datastore: ds,
+		Echo: echo.New(),
 	}
+	tpds, err := datastore.NewTaskProgress(dbType, dbName)
+	if err != nil {
+		panic(fmt.Errorf("create task progress datastore failed: %v", err))
+	}
+	s.TaskProgressDatastore = tpds
 
 	// s.Echo.Debug = true
-	var err error
 	s.Target, err = url.Parse(targetStr)
 	if err != nil {
 		panic(fmt.Errorf("parse target %s failed: %v", targetStr, err))
@@ -60,7 +63,7 @@ func (s *Server) Start(address string) error {
 }
 
 func (s *Server) Close() error {
-	return s.Datastore.Close()
+	return s.TaskProgressDatastore.Close()
 }
 
 func (s *Server) progressHandler(c echo.Context) error {
@@ -85,11 +88,13 @@ func (s *Server) progressHandler(c echo.Context) error {
 	c.Request().Body = io.NopCloser(bytes.NewBuffer(body))
 
 	// Get task state from DB.
-	state, err := s.Datastore.Get(taskId)
-	if err == datastore.ErrNotFound {
-		state = `{"active":false,"queued":false,"completed":false,"progress":null,"eta":null,"live_preview":null,"id_live_preview":-1,"textinfo":"Waiting..."}`
-	} else if err != nil {
+	state, err := s.TaskProgressDatastore.GetProgress(taskId)
+	if err != nil {
 		return err
+	}
+	if state == "" {
+		// When the task is not in the datastore, which means the task has not been submitted, then we return a default response to submit the task.
+		state = `{"active":false,"queued":false,"completed":false,"progress":null,"eta":null,"live_preview":null,"id_live_preview":-1,"textinfo":"Waiting..."}`
 	}
 	return c.Blob(http.StatusOK, "application/json", []byte(state))
 }

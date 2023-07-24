@@ -4,10 +4,20 @@ import "errors"
 
 var ErrNotFound = errors.New("datastore: the key is not found")
 
+type DatastoreType int
+
+const (
+	SQLite DatastoreType = iota
+	MySQL
+	TableStore
+)
+
 type Config struct {
-	TableName     string
-	ColumnConfig  map[string]string // map of column name to column type
-	KeyColumnName string
+	Type                 DatastoreType // the datastore type
+	DBName               string        // the database name
+	TableName            string
+	ColumnConfig         map[string]string // map of column name to column type
+	PrimaryKeyColumnName string
 }
 
 type Datastore interface {

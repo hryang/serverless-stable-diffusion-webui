@@ -25,10 +25,9 @@ func main() {
 		panic("invalid datastore")
 	}
 
-	ds := datastore.NewSQLiteDatastore(*sqliteFile)
-
 	fmt.Printf("target: %s, port: %d, sqlite file: %s\n", *target, *port, *sqliteFile)
-	s := proxy.NewServer(*target, ds)
+	// TODO: Make dbType configurable.
+	s := proxy.NewServer(*target, datastore.SQLite, *sqliteFile)
 
 	s.Echo.Logger.Fatal(s.Start(fmt.Sprintf("0.0.0.0:%d", *port)))
 }

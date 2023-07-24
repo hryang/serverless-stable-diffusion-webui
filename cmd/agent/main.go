@@ -25,11 +25,10 @@ func main() {
 		panic("invalid datastore")
 	}
 
-	ds := datastore.NewSQLiteDatastore(*sqliteFile)
-
 	fmt.Printf("target: %s, port: %d, sqlite file: %s\n", *target, *port, *sqliteFile)
 
-	s := agent.NewAgent(*target, ds)
+	// TODO: Make dbType configurable.
+	s := agent.NewAgent(*target, datastore.SQLite, *sqliteFile)
 	defer s.Close()
 
 	s.Echo.Logger.Fatal(s.Start(fmt.Sprintf("0.0.0.0:%d", *port)))

@@ -14,8 +14,8 @@ type SQLiteDatastore struct {
 	config *Config
 }
 
-func NewSQLiteDatastore(dbName string, config *Config) *SQLiteDatastore {
-	db, err := sql.Open("sqlite3", dbName)
+func NewSQLiteDatastore(config *Config) *SQLiteDatastore {
+	db, err := sql.Open("sqlite3", config.DBName)
 	if err != nil {
 		panic(fmt.Errorf("failed to open database: %v", err))
 	}
@@ -46,7 +46,8 @@ func (ds *SQLiteDatastore) Close() error {
 
 func (ds *SQLiteDatastore) Get(key string, columns []string) (map[string]interface{}, error) {
 	row := ds.db.QueryRow(
-		fmt.Sprintf("SELECT %s FROM %s WHERE key = ?", strings.Join(columns, ", "), ds.config.TableName),
+		fmt.Sprintf("SELECT %s FROM %s WHERE %s = ?",
+			strings.Join(columns, ", "), ds.config.TableName, ds.config.PrimaryKeyColumnName),
 		key,
 	)
 
@@ -92,7 +93,7 @@ func (ds *SQLiteDatastore) Get(key string, columns []string) (map[string]interfa
 }
 
 func (ds *SQLiteDatastore) Put(key string, values map[string]interface{}) error {
-	columns := []string{ds.config.KeyColumnName}
+	columns := []string{ds.config.PrimaryKeyColumnName}
 	placeholders := []string{"?"}
 	args := []interface{}{key}
 	for column, value := range values {
@@ -111,6 +112,9 @@ func (ds *SQLiteDatastore) Put(key string, values map[string]interface{}) error 
 }
 
 func (ds *SQLiteDatastore) Delete(key string) error {
-	_, err := ds.db.Exec(fmt.Sprintf("DELETE FROM %s WHERE key = ?", ds.config.TableName), key)
+	_, err := ds.db.Exec(
+		fmt.Sprintf(
+			"DELETE FROM %s WHERE %s = ?", ds.config.TableName, ds.config.PrimaryKeyColumnName),
+		key)
 	return err
 }
