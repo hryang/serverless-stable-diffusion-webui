@@ -15,8 +15,10 @@ import (
 )
 
 type Server struct {
-	Target                *url.URL                // the target server address
+	Proxies               []*ReverseProxy // the reverse proxy for each downstream sd service
+	ProxySelector         ReverseProxySelector
 	Echo                  *echo.Echo              // the echo server for reverse proxy
+	SDServicesDatastore   *datastore.SDServices   // the datastore for the backend stable-diffusion services
 	TaskProgressDatastore *datastore.TaskProgress // the datastore to store the task states
 }
 
@@ -24,6 +26,16 @@ func NewServer(targetStr string, dbType datastore.DatastoreType, dbName string) 
 	s := &Server{
 		Echo: echo.New(),
 	}
+
+	// TODO: Make proxy selector configurable.
+	s.ProxySelector = NewRoundRobinReverseProxySelector()
+
+	sdsd, err := datastore.NewSDServices(dbType, dbName)
+	if err != nil {
+		panic(fmt.Errorf("create stable-diffusion services datastore failed: %v", err))
+	}
+	s.SDServicesDatastore = sdsd
+
 	tpds, err := datastore.NewTaskProgress(dbType, dbName)
 	if err != nil {
 		panic(fmt.Errorf("create task progress datastore failed: %v", err))
@@ -31,29 +43,42 @@ func NewServer(targetStr string, dbType datastore.DatastoreType, dbName string) 
 	s.TaskProgressDatastore = tpds
 
 	// s.Echo.Debug = true
-	s.Target, err = url.Parse(targetStr)
-	if err != nil {
-		panic(fmt.Errorf("parse target %s failed: %v", targetStr, err))
-	}
-
 	s.Echo.Use(middleware.Logger())
 	s.Echo.Use(middleware.Recover())
 
-	proxy := httputil.NewSingleHostReverseProxy(s.Target)
+	services, err := s.SDServicesDatastore.ListAllServiceEndpoints()
+	if err != nil {
+		panic(fmt.Errorf("list all service endpoints failed: %v", err))
+	}
+	for _, srv := range services {
+		target, err := url.Parse(srv.Endpoint)
+		if err != nil {
+			panic(fmt.Errorf("parse target %s failed: %v", srv.Endpoint, err))
+		}
+		proxy := httputil.NewSingleHostReverseProxy(target)
+		s.Proxies = append(s.Proxies, &ReverseProxy{
+			Name:   srv.Name,
+			Target: target,
+			Proxy:  proxy,
+		})
+		s.Echo.Logger.Infof("create reverse proxy for %s: %s", srv.Name, srv.Endpoint)
+	}
 
 	s.Echo.POST("/internal/progress", s.progressHandler)
 
 	// Handler for all other cases.
 	s.Echo.Any("/*", func(c echo.Context) error {
 		req := c.Request()
-		req.Host = s.Target.Host
-		req.URL.Host = s.Target.Host
-		req.URL.Scheme = s.Target.Scheme
-		proxy.ServeHTTP(c.Response(), c.Request())
+		p, err := s.ProxySelector.Select(s.Proxies, req)
+		if err != nil {
+			return err
+		}
+		req.Host = p.Target.Host
+		req.URL.Host = p.Target.Host
+		req.URL.Scheme = p.Target.Scheme
+		p.Proxy.ServeHTTP(c.Response(), c.Request())
 		return nil
 	})
-
-	s.Echo.Logger.Infof("create the reverse proxy for %s", targetStr)
 
 	return s
 }
@@ -68,9 +93,13 @@ func (s *Server) Close() error {
 
 func (s *Server) progressHandler(c echo.Context) error {
 	req := c.Request()
-	req.Host = s.Target.Host
-	req.URL.Host = s.Target.Host
-	req.URL.Scheme = s.Target.Scheme
+	proxy, err := s.ProxySelector.Select(s.Proxies, req)
+	if err != nil {
+		return err
+	}
+	req.Host = proxy.Target.Host
+	req.URL.Host = proxy.Target.Host
+	req.URL.Scheme = proxy.Target.Scheme
 
 	// Get task id from request.
 	body, err := io.ReadAll(c.Request().Body)

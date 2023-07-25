@@ -15,9 +15,6 @@ func main() {
 
 	flag.Parse()
 
-	if *target == "" {
-		panic("invalid target")
-	}
 	if *port == 0 {
 		panic("invalid port")
 	}

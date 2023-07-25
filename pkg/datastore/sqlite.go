@@ -118,3 +118,45 @@ func (ds *SQLiteDatastore) Delete(key string) error {
 		key)
 	return err
 }
+
+func (ds *SQLiteDatastore) ListAll() (map[string]map[string]interface{}, error) {
+	rows, err := ds.db.Query(fmt.Sprintf("SELECT * FROM %s", ds.config.TableName))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+
+	results := make(map[string]map[string]interface{})
+	for rows.Next() {
+		columns := make([]interface{}, len(cols))
+		columnPointers := make([]interface{}, len(cols))
+		for i := range columns {
+			columnPointers[i] = &columns[i]
+		}
+
+		err := rows.Scan(columnPointers...)
+		if err != nil {
+			return nil, err
+		}
+
+		m := make(map[string]interface{})
+		for i, colName := range cols {
+			val := columnPointers[i].(*interface{})
+			m[colName] = *val
+		}
+
+		key := m[ds.config.PrimaryKeyColumnName].(string)
+		results[key] = m
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return results, nil
+}

@@ -84,10 +84,12 @@ func (a *Agent) updateTaskProgress(ctx context.Context, taskId string) error {
 		default:
 			// Do nothing, go to the next
 		}
-		// TODO: Make the task progress url configurable.
+		progressUrl, err := url.JoinPath(a.Target.String(), "/internal/progress")
+		if err != nil {
+			return err
+		}
 		reqBody := fmt.Sprintf(`{"id_task":"%s","id_live_preview":%f}`, taskId, previewId)
-		req, err := http.NewRequest(
-			"POST", "http://sd.fc-stable-diffusion.1050834996213541.cn-hangzhou.fc.devsapp.net/internal/progress", bytes.NewBuffer([]byte(reqBody)))
+		req, err := http.NewRequest("POST", progressUrl, bytes.NewBuffer([]byte(reqBody)))
 		if err != nil {
 			return err
 		}

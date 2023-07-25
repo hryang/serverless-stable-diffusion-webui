@@ -39,6 +39,11 @@ type Datastore interface {
 	// Note: delete a non-existent key will not return an error.
 	Delete(key string) error
 
+	// ListAll read all data from the datastore.
+	// It return a nested map, which means map[primaryKey]map[columanName]columanValue.
+	// Note: since it reads all data and store them in memory, so do not call this function on a large datastore.
+	ListAll() (map[string]map[string]interface{}, error)
+
 	// Close close the datastore.
 	Close() error
 }
